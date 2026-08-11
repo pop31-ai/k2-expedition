@@ -618,7 +618,13 @@ moveTeam = function (delta) {
   }
 };
 
-startGame();
+updateButtons();
+
+function loop() {
+  draw();
+  requestAnimationFrame(loop);
+}
+loop();
 </script>
 </body>
 </html>
