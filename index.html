@@ -273,9 +273,9 @@ function updateButtons() {
   const bx = 730, bw = 250;
   let y = 400;
   if (state === 'menu') {
-    buttons.push({ x: bx, y: 330, w: bw, h: 48, label: 'Начать экспедицию', act: () => startGame() });
+    buttons.push({ x: 375, y: 440, w: 250, h: 48, label: 'Начать экспедицию', act: () => startGame() });
   } else if (state === 'end') {
-    buttons.push({ x: bx, y: 330, w: bw, h: 48, label: 'Ещё одна попытка', act: () => startGame() });
+    buttons.push({ x: 375, y: 360, w: 250, h: 48, label: 'Ещё одна попытка', act: () => startGame() });
   } else if (state === 'summit') {
     buttons.push({ x: bx, y, w: bw, h: 46, label: 'Начинаем спуск', act: () => { descending = true; state = 'play'; logMsg('Спуск к базовому лагерю. Осторожно!'); updateButtons(); } });
   } else {
@@ -512,6 +512,10 @@ function drawHud() {
   }
 
   // кнопки
+  drawButtons();
+}
+
+function drawButtons() {
   for (const b of buttons) {
     ctx.fillStyle = b.disabled ? 'rgba(255,255,255,0.08)' : (b.label.indexOf('Навык') === 0 ? 'rgba(80,140,255,0.35)' : 'rgba(60,180,120,0.35)');
     ctx.fillRect(b.x, b.y, b.w, b.h);
@@ -558,6 +562,7 @@ function drawMenu() {
   ctx.font = '15px Segoe UI';
   ctx.fillText('Четверо против К2. Доведешь всех до 8611 м — и обратно?', 500, 470);
   ctx.textAlign = 'left';
+  drawButtons();
 }
 
 function drawEnd() {
@@ -584,6 +589,7 @@ function drawEnd() {
   ctx.font = '13px Segoe UI';
   ctx.fillText('Большинство трагедий на К2 — на спуске. Решающим был выбор пути.', 500, 305);
   ctx.textAlign = 'left';
+  drawButtons();
 }
 
 function draw() {
