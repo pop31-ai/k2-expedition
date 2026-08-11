@@ -43,8 +43,8 @@ let day = 0;
 let log = [];
 let buttons = [];
 let team = [];
-let food = 12;          // порций
-let oxygen = 600;       // литров
+let food = 80;          // порций
+let oxygen = 700;       // литров
 let rope = 1;
 let windWindow = false;
 let nextBoost = false;
@@ -53,6 +53,11 @@ let summited = false;
 let deaths = 0;
 let survivors = 0;
 let result = null;
+let weather = 'ясно';
+let forecast = 'ясно';
+let route = null;
+let selectedRoute = 1;
+let deadNames = [];
 
 function logMsg(s) { log.push(s); if (log.length > 7) log.shift(); }
 
@@ -71,13 +76,33 @@ function o2RatePerPerson(alt, storm) {
   return r;
 }
 
+// ---------- Маршруты ----------
+const ROUTES = [
+  { name: 'Классика',    desc: 'Безопасно, но пробки туристов', speed: 1,    stamina: 1,    ava: 0.6,  traff: 2 },
+  { name: 'Северное ребро', desc: 'Быстро и технично',           speed: 1.25, stamina: 1.15, ava: 0.9,  traff: 0.7 },
+  { name: 'Кулуар',      desc: 'Очень быстро, лавиноопасно',     speed: 1.4,  stamina: 1.25, ava: 1.6,  traff: 0.4 },
+];
+
+// ---------- Погода ----------
+function nextWeather() {
+  const r = Math.random();
+  if (r < 0.24) return 'шторм';
+  if (r < 0.54) return 'ясно';
+  if (r < 0.78) return 'туман';
+  return 'ветер';
+}
+function advanceWeather() {
+  weather = forecast;
+  forecast = nextWeather();
+}
+
 // ---------- Команда ----------
 function makeTeam() {
   return [
-    { name: 'Арсалан',   role: 'Шерп',      color: '#ff7b3a', stamina: 100, hp: 100, perk: 'Скорость +20%', skill: 'Рывок (2x дистанция)', skillUsed: false },
-    { name: 'Лина',      role: 'Врач',      color: '#4ad0ff', stamina: 78,  hp: 92,  perk: 'Лечит на стоянке', skill: 'Перевязка (+25 hp всем)', skillUsed: false },
-    { name: 'Ханс',      role: 'Новичок',   color: '#7be86c', stamina: 62,  hp: 100, perk: 'Малый расход O2', skill: 'Второе дыхание (+20 стамина всем)', skillUsed: false },
-    { name: 'Ольга',     role: 'Фотограф',  color: '#ffd24a', stamina: 72,  hp: 86,  perk: 'Мораль при спасении', skill: 'Вдохновение (+30 стамина всем)', skillUsed: false },
+    { name: 'Арсалан',   role: 'Шерп',      color: '#ff7b3a', stamina: 100, hp: 100, accl: 25, perk: 'Скорость +20%', skill: 'Рывок (2x дистанция)', skillUsed: false },
+    { name: 'Лина',      role: 'Врач',      color: '#4ad0ff', stamina: 78,  hp: 92,  accl: 25, perk: 'Лечит на стоянке', skill: 'Перевязка (+25 hp всем)', skillUsed: false },
+    { name: 'Ханс',      role: 'Новичок',   color: '#7be86c', stamina: 62,  hp: 100, accl: 25, perk: 'Малый расход O2', skill: 'Второе дыхание (+20 стамина всем)', skillUsed: false },
+    { name: 'Ольга',     role: 'Фотограф',  color: '#ffd24a', stamina: 72,  hp: 86,  accl: 25, perk: 'Мораль при спасении', skill: 'Вдохновение (+30 стамина всем)', skillUsed: false },
   ];
 }
 
@@ -100,7 +125,11 @@ function doClimb() {
   day++;
   const alt = leaderAlt();
   const d = difficultyAt(alt);
-  let dist = (150 / d) * (0.8 + Math.random() * 0.5);
+  let dist = (500 / d) * (0.8 + Math.random() * 0.5) * route.speed;
+  if (weather === 'шторм') dist *= 0.7;
+  else if (weather === 'туман') dist *= 0.85;
+  else if (weather === 'ветер') dist *= 0.9;
+  else dist *= 1.15;
   if (team[0].perk === 'Скорость +20%') dist *= 1.2;
   if (nextBoost) { dist *= 2; nextBoost = false; }
   if (windWindow) { dist *= 1.5; windWindow = false; }
@@ -113,6 +142,9 @@ function doClimb() {
   }
   moveTeam(dist);
   consumeTurn(descending ? 0.7 : 1);
+  advanceWeather();
+  if (weather === 'шторм') logMsg('Ночью налетел ШТОРМ.');
+  else if (forecast === 'шторм') logMsg('Радио: завтра шторм.');
   if (summited) {
     logMsg('ВЕРШИНА! 8611 м — поднялись на крышу мира!');
     logMsg('Теперь главное — спуститься.');
@@ -128,15 +160,19 @@ function doClimb() {
 function doRest() {
   if (state !== 'play') return;
   day++;
+  const alt = leaderAlt();
   if (food <= 0) { logMsg('Еда закончилась! Стоянка без припасов.'); }
   for (const m of team) {
     m.stamina = Math.min(100, m.stamina + 55);
     if (m.perk === 'Лечит на стоянке') m.hp = Math.min(100, m.hp + 5);
+    if (alt >= 6000) m.accl = Math.min(100, m.accl + (alt >= 7500 ? 6 : 9));
   }
-  food = Math.max(0, food - team.length);
-  logMsg('Разбили лагерь: стамина восстановлена.');
-  rollEvent(leaderAlt(), 0.25);
+  food = Math.max(0, food - Math.max(1, Math.ceil(team.length * 0.75)));
+  logMsg('Лагерь: стамина и акклиматизация растут.');
+  rollEvent(alt, 0.25);
   checkDeath();
+  advanceWeather();
+  if (weather === 'шторм') logMsg('Ночью налетел ШТОРМ.');
   updateButtons();
 }
 
@@ -163,7 +199,7 @@ function toggleDescend() {
 // ---------- Ресурсы и здоровье ----------
 function consumeTurn(factor) {
   const alive = team.filter(m => m.hp > 0);
-  const storm = Math.random() < 0.15;
+  const storm = weather === 'шторм';
   const alt = leaderAlt();
   const rate = o2RatePerPerson(alt, storm);
 
@@ -179,6 +215,9 @@ function consumeTurn(factor) {
     if (m.hp <= 0) continue;
     const d = difficultyAt(alt);
     let loss = (d * 5 + (noO2 && alt > DANGER_ALT ? 12 : 0)) * factor;
+    if (storm) loss *= 1.4;
+    if (weather === 'ветер') loss *= 1.15;
+    loss *= route.stamina;
     m.stamina -= loss;
     if (m.perk === 'Малый расход O2' && noO2) m.stamina += 4;
     if (m.stamina <= 0) {
@@ -187,10 +226,12 @@ function consumeTurn(factor) {
     }
     // голод
     if (food <= 0) m.hp -= 3;
+    // высотная болезнь при плохой акклиматизации
+    if (alt > 7500 && m.accl < 45) m.hp -= (45 - m.accl) / 18;
   }
 
   if (food > 0) {
-    food = Math.max(0, food - Math.ceil(alive.length * factor));
+    food = Math.max(0, food - Math.max(1, Math.ceil(alive.length * 0.75 * factor)));
     if (food === 0) logMsg('Провизия закончилась.');
   }
   if (storm && alt > 6000) logMsg('Шторм: все мёрзнут.');
@@ -198,56 +239,65 @@ function consumeTurn(factor) {
 
 // ---------- События ----------
 function rollEvent(alt, chance) {
-  if (Math.random() > chance) {
-    const w = ['ясно', 'туман', 'лёгкий ветер', 'солнечно', 'морозно'][Math.floor(Math.random() * 5)];
-    logMsg('Погода: ' + w + '.');
+  if (weather === 'шторм') {
+    logMsg('ШТОРМ бушует вокруг лагеря. Теряем силы.');
+    for (const m of team) { m.stamina = Math.max(0, m.stamina - 22); m.hp -= 4; }
+    oxygen = Math.max(0, oxygen - 50);
     return;
   }
-  const high = alt > DANGER_ALT;
+  if (Math.random() > chance) {
+    logMsg('Погода: ' + weather + ' · завтра ' + forecast + '.');
+    return;
+  }
   const roll = Math.random();
-  if (alt > 6000 && roll < 0.18) {
+  const avaP = (alt > 6000 ? 0.18 : 0) * route.ava;
+  if (alt > 6000 && roll < avaP) {
     logMsg('ЛАВИНА! Все вцепились в склон.');
     if (Math.random() < 0.35) {
       oxygen = Math.max(0, oxygen - 200);
       logMsg('Рюкзак с баллонами унесло лавиной!');
     }
     if (Math.random() < 0.2 && team.length > 1) {
-      const idx = Math.floor(Math.random() * team.length);
-      const dead = team[idx];
-      team.splice(idx, 1);
-      deaths++; if (!dead) {}
+      const dead = team[Math.floor(Math.random() * team.length)];
       logMsg(dead.name + ' сорвался в расщелину...');
+      killMember(dead);
     } else if (Math.random() < 0.3) {
       for (const m of team) m.hp -= 12;
       logMsg('Каменный град — все пострадали.');
     }
   } else if (roll < 0.38) {
-    logMsg('ШТОРМ накрыл группу. Теряем силы.');
-    for (const m of team) { m.stamina = Math.max(0, m.stamina - 25); m.hp -= 5; }
-    oxygen = Math.max(0, oxygen - 60);
+    logMsg('Тяжёлый день (' + weather + '). Теряем силы.');
+    for (const m of team) { m.stamina = Math.max(0, m.stamina - 18); m.hp -= 4; }
   } else if (roll < 0.55) {
-    logMsg('Пробка из коммерческих групп. Час в очереди.');
-    for (const m of team) m.stamina = Math.max(0, m.stamina - 8);
-    oxygen = Math.max(0, oxygen - 40);
+    const q = route.traff;
+    if (q > 1) logMsg('Пробка из коммерческих групп. Час в очереди.');
+    else logMsg('Маршрут пуст — толп нет, идём ходко.');
+    for (const m of team) m.stamina = Math.max(0, m.stamina - 8 * q);
+    oxygen = Math.max(0, oxygen - 40 * q);
   } else if (roll < 0.7) {
     logMsg('Спасли застрявшего альпиниста. Мораль растёт!');
     for (const m of team) m.hp = Math.min(100, m.hp + 8);
   } else if (roll < 0.84) {
     logMsg('Брошенный лагерь: нашлись припасы.');
-    food += 3; oxygen = Math.min(800, oxygen + 100);
+    food += 6; oxygen = Math.min(900, oxygen + 120);
   } else {
     logMsg('Окно хорошей погоды! Движемся быстрее.');
     windWindow = true;
   }
 }
 
+function killMember(m) {
+  const i = team.indexOf(m);
+  if (i >= 0) team.splice(i, 1);
+  deadNames.push(m.name);
+  deaths++;
+}
+
 function checkDeath() {
-  const before = team.length;
-  team = team.filter(m => m.hp > 0);
-  const died = before - team.length;
-  if (died > 0) {
-    deaths += died;
-    logMsg('Погибло альпинистов: ' + died);
+  const dying = team.filter(m => m.hp <= 0);
+  for (const m of dying) {
+    logMsg(m.name + ' погиб...');
+    killMember(m);
   }
   if (team.length === 0) {
     endGame(false);
@@ -256,8 +306,8 @@ function checkDeath() {
 
 function endGame(win) {
   survivors = team.length;
-  const summitted = summited;
-  result = { win: win, survivors: survivors, deaths: deaths, summited: summitted, days: day, alt: leaderAlt() };
+  const score = Math.max(0, survivors * 100 + (summited ? 200 : 0) - deaths * 60 - day * 3);
+  result = { win: win, survivors: survivors, deaths: deaths, summited: summited, days: day, alt: leaderAlt(), score: score, deadNames: deadNames.slice() };
   state = 'end';
   updateButtons();
 }
@@ -271,25 +321,25 @@ function toBase() {
 function updateButtons() {
   buttons = [];
   const bx = 730, bw = 250;
-  let y = 400;
   if (state === 'menu') {
-    buttons.push({ x: 375, y: 440, w: 250, h: 48, label: 'Начать экспедицию', act: () => startGame() });
+    ROUTES.forEach((r, i) => {
+      buttons.push({ x: 25 + i * 333, y: 404, w: 300, h: 58, label: r.name, sub: r.desc, act: () => { selectedRoute = i; updateButtons(); }, selected: selectedRoute === i });
+    });
+    buttons.push({ x: 375, y: 496, w: 250, h: 48, label: 'Начать экспедицию', act: () => startGame() });
   } else if (state === 'end') {
     buttons.push({ x: 375, y: 360, w: 250, h: 48, label: 'Ещё одна попытка', act: () => startGame() });
   } else if (state === 'summit') {
-    buttons.push({ x: bx, y, w: bw, h: 46, label: 'Начинаем спуск', act: () => { descending = true; state = 'play'; logMsg('Спуск к базовому лагерю. Осторожно!'); updateButtons(); } });
+    buttons.push({ x: bx, y: 414, w: bw, h: 46, label: 'Начинаем спуск', act: () => { descending = true; state = 'play'; logMsg('Спуск к базовому лагерю. Осторожно!'); updateButtons(); } });
   } else {
-    buttons.push({ x: bx, y, w: bw, h: 46, label: descending ? 'Спускаемся вниз' : 'Вперёд вверх', act: doClimb });
-    y += 52;
-    buttons.push({ x: bx, y, w: bw, h: 46, label: 'Стоянка (отдых)', act: doRest });
-    y += 52;
-    buttons.push({ x: bx, y, w: bw, h: 46, label: descending ? 'Развернуться вверх' : 'Повернуть вниз', act: toggleDescend });
-    y += 52;
-    for (let i = 0; i < team.length; i++) {
-      const m = team[i];
-      buttons.push({ x: bx, y, w: bw, h: 40, label: 'Навык: ' + m.role + (m.skillUsed ? ' (исп.)' : ''), act: () => doSkill(i), disabled: m.skillUsed });
-      y += 46;
-    }
+    let y = 414;
+    buttons.push({ x: bx, y, w: bw, h: 38, label: descending ? 'Спуск вниз' : 'Вперёд вверх', act: doClimb });
+    y += 44;
+    buttons.push({ x: bx, y, w: bw, h: 38, label: 'Отдых (лагерь)', act: doRest });
+    y += 44;
+    buttons.push({ x: bx, y, w: bw, h: 38, label: descending ? 'Развернуться вверх' : 'Повернуть вниз', act: toggleDescend });
+    team.forEach((m, i) => {
+      buttons.push({ x: 730 + (i % 2) * 132, y: 546 + Math.floor(i / 2) * 42, w: 124, h: 36, label: 'Навык: ' + m.role, act: () => doSkill(i), disabled: m.skillUsed });
+    });
   }
 }
 
@@ -301,10 +351,13 @@ function startGame() {
   windWindow = false; nextBoost = false;
   descending = false; summited = false;
   deaths = 0; survivors = 0; result = null;
+  deadNames = [];
+  route = ROUTES[selectedRoute];
+  weather = 'ясно'; forecast = nextWeather();
   state = 'play';
   logMsg('День 1. Базовый лагерь, 5000 м.');
+  logMsg('Маршрут: ' + route.name + ' — ' + route.desc + '.');
   logMsg('Цель: вершина К2 (8611 м) и возвращение.');
-  logMsg('Любая смерть — поражение для экспедиции.');
   updateButtons();
 }
 
@@ -454,49 +507,46 @@ function drawHud() {
   ctx.fillRect(W, 0, 1000 - W, H);
 
   ctx.fillStyle = '#eaf2ff';
-  ctx.font = 'bold 17px Segoe UI';
-  ctx.fillText('ЭКСПЕДИЦИЯ К2', x, 28);
-  ctx.font = '12px Segoe UI';
+  ctx.font = 'bold 16px Segoe UI';
+  ctx.fillText('ЭКСПЕДИЦИЯ К2', x, 24);
+  ctx.font = '11px Segoe UI';
   ctx.fillStyle = '#9fb3d6';
-  ctx.fillText('Крыша мира · 8611 м', x, 46);
+  ctx.fillText('Маршрут: ' + (route ? route.name : ''), x, 40);
 
-  // статус
   ctx.fillStyle = '#cfd9ec';
   ctx.font = '12px Segoe UI';
   const alt = leaderAlt();
-  ctx.fillText('Высота: ' + Math.round(alt) + ' м', x, 70);
-  ctx.fillText('День: ' + day, x, 86);
-  ctx.fillText('Статус: ' + (descending ? 'СПУСК' : 'ВОСХОЖДЕНИЕ'), x, 102);
-  ctx.fillText('Флаг: ' + (summited ? 'ВЗЯТ' : '—'), x, 118);
+  ctx.fillText('Высота: ' + Math.round(alt) + ' м', x, 60);
+  ctx.fillText('День: ' + day, x, 76);
+  ctx.fillText('Статус: ' + (descending ? 'СПУСК' : 'ВОСХОЖДЕНИЕ') + (summited ? ' · Флаг взят' : ''), x, 92);
+  ctx.fillStyle = weather === 'шторм' ? '#ff6b6b' : (weather === 'ясно' ? '#7be86c' : '#ffd24a');
+  ctx.fillText('Погода: ' + weather.toUpperCase() + ' → завтра ' + forecast, x, 108);
 
   // ресурсы
   ctx.fillStyle = '#eaf2ff';
-  ctx.fillText('Припасы:', x, 144);
-  drawBar(x, 150, w, 10, food, 20, '#d9a441', '#b97e2a');
-  ctx.fillText('Еда ' + food, x + w + 4, 159);
-  drawBar(x, 168, w, 10, oxygen, 800, '#4ad0ff', '#2f8fb0');
-  ctx.fillText('O2 ' + Math.round(oxygen) + ' л', x + w + 4, 177);
+  ctx.font = '12px Segoe UI';
+  ctx.fillText('Еда ' + food, x, 130);
+  drawBar(x, 134, w, 8, food, 20, '#d9a441', '#b97e2a');
+  ctx.fillText('O2 ' + Math.round(oxygen) + ' л', x, 154);
+  drawBar(x, 158, w, 8, oxygen, 900, '#4ad0ff', '#2f8fb0');
 
   // команда
-  ctx.fillStyle = '#eaf2ff';
-  ctx.fillText('Команда (' + team.length + '):', x, 204);
-  let yy = 212;
+  ctx.font = 'bold 12px Segoe UI';
+  ctx.fillText('Команда (' + team.length + '):', x, 182);
+  let yy = 190;
   for (const m of team) {
     ctx.fillStyle = m.color;
-    ctx.font = 'bold 12px Segoe UI';
-    ctx.fillText(m.name + ' — ' + m.role, x, yy);
+    ctx.font = 'bold 11px Segoe UI';
+    ctx.fillText(m.name, x, yy);
     ctx.font = '10px Segoe UI';
     ctx.fillStyle = '#8fa3c4';
-    ctx.fillText(m.perk, x + w - 90, yy);
-    yy += 14;
-    drawBar(x, yy, w, 8, m.stamina, 100, '#7be86c', '#3f9b3f');
-    ctx.fillStyle = '#9fb3d6'; ctx.font = '10px Segoe UI';
-    ctx.fillText('Стамена', x + w + 4, yy + 8);
+    ctx.fillText(m.role + (m.skillUsed ? ' ✓' : ''), x + 62, yy);
+    ctx.fillStyle = '#9fb3d6';
+    ctx.fillText('акк ' + Math.round(m.accl), x + w - 42, yy);
+    yy += 4;
+    drawBar(x, yy, w / 2 - 3, 6, m.stamina, 100, '#7be86c', '#3f9b3f');
+    drawBar(x + w / 2 + 3, yy, w / 2 - 3, 6, m.hp, 100, '#ff6b6b', '#b33232');
     yy += 11;
-    drawBar(x, yy, w, 8, m.hp, 100, '#ff6b6b', '#b33232');
-    ctx.fillStyle = '#9fb3d6'; ctx.font = '10px Segoe UI';
-    ctx.fillText('Здоровье', x + w + 4, yy + 8);
-    yy += 18;
   }
 
   // лог
@@ -505,7 +555,7 @@ function drawHud() {
   ctx.fillText('Журнал:', x, yy + 4);
   yy += 10;
   ctx.font = '11px Segoe UI';
-  for (const s of log) {
+  for (const s of log.slice(-4)) {
     ctx.fillStyle = '#b8c6e0';
     ctx.fillText(s.length > 34 ? s.slice(0, 33) + '…' : s, x, yy);
     yy += 15;
@@ -517,14 +567,26 @@ function drawHud() {
 
 function drawButtons() {
   for (const b of buttons) {
-    ctx.fillStyle = b.disabled ? 'rgba(255,255,255,0.08)' : (b.label.indexOf('Навык') === 0 ? 'rgba(80,140,255,0.35)' : 'rgba(60,180,120,0.35)');
+    if (b.selected) {
+      ctx.fillStyle = 'rgba(255, 200, 60, 0.22)';
+      ctx.strokeStyle = '#ffd24a';
+    } else {
+      ctx.fillStyle = b.disabled ? 'rgba(255,255,255,0.08)' : 'rgba(60,180,120,0.35)';
+      ctx.strokeStyle = b.disabled ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.35)';
+    }
     ctx.fillRect(b.x, b.y, b.w, b.h);
-    ctx.strokeStyle = b.disabled ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 2;
     ctx.strokeRect(b.x, b.y, b.w, b.h);
+    ctx.lineWidth = 1;
     ctx.fillStyle = b.disabled ? '#556' : '#eaf2ff';
-    ctx.font = '12px Segoe UI';
+    ctx.font = 'bold 13px Segoe UI';
     ctx.textAlign = 'center';
-    ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + 4);
+    ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + (b.sub ? -2 : 5));
+    if (b.sub) {
+      ctx.font = '10px Segoe UI';
+      ctx.fillStyle = '#9fb3d6';
+      ctx.fillText(b.sub, b.x + b.w / 2, b.y + b.h / 2 + 14);
+    }
     ctx.textAlign = 'left';
   }
 }
@@ -561,6 +623,9 @@ function drawMenu() {
   ctx.fillStyle = '#fff';
   ctx.font = '15px Segoe UI';
   ctx.fillText('Четверо против К2. Доведешь всех до 8611 м — и обратно?', 500, 470);
+  ctx.font = '12px Segoe UI';
+  ctx.fillStyle = '#ffd24a';
+  ctx.fillText('Выбери маршрут → «Начать экспедицию»', 500, 492);
   ctx.textAlign = 'left';
   drawButtons();
 }
@@ -575,19 +640,30 @@ function drawEnd() {
   ctx.textAlign = 'center';
   const t1 = result.win ? 'ЭКСПЕДИЦИЯ УСПЕШНА' : 'ЭКСПЕДИЦИЯ ПРОВАЛЕНА';
   ctx.fillStyle = result.win ? '#7be86c' : '#ff6b6b';
-  ctx.fillText(t1, 500, 200);
+  ctx.fillText(t1, 500, 185);
   ctx.fillStyle = '#eaf2ff';
-  ctx.font = '18px Segoe UI';
+  ctx.font = '17px Segoe UI';
   if (result.win) {
-    ctx.fillText('Вершина взята и команда вернулась живой!', 500, 240);
+    ctx.fillText('Вершина взята и команда вернулась живой!', 500, 220);
   } else {
-    ctx.fillText('Вершина: ' + (result.summited ? 'взята' : 'не взята') + ' · выживших: ' + result.survivors, 500, 240);
+    ctx.fillText('Вершина: ' + (result.summited ? 'взята' : 'не взята') + ' · выживших: ' + result.survivors + ' из 4', 500, 220);
   }
   ctx.font = '15px Segoe UI';
+  ctx.fillStyle = '#ffd24a';
+  ctx.fillText('Очки: ' + result.score + ' (выжившие 100 · вершина 200 · день −3 · смерть −60)', 500, 250);
+  ctx.font = '14px Segoe UI';
   ctx.fillStyle = '#9fb3d6';
-  ctx.fillText('Дней: ' + result.days + ' · Погибло: ' + result.deaths + ' · Вершина: ' + (result.summited ? 'ДА' : 'нет'), 500, 275);
-  ctx.font = '13px Segoe UI';
-  ctx.fillText('Большинство трагедий на К2 — на спуске. Решающим был выбор пути.', 500, 305);
+  ctx.fillText('Дней: ' + result.days + ' · Погибло: ' + result.deaths, 500, 278);
+  if (result.deadNames.length > 0) {
+    ctx.fillStyle = '#ff8f8f';
+    ctx.fillText('Не вернулись: ' + result.deadNames.join(', '), 500, 300);
+  } else {
+    ctx.fillStyle = '#7be86c';
+    ctx.fillText('Без потерь. Все дома.', 500, 300);
+  }
+  ctx.font = '12px Segoe UI';
+  ctx.fillStyle = '#9fb3d6';
+  ctx.fillText('Большинство трагедий на К2 — на спуске.', 500, 325);
   ctx.textAlign = 'left';
   drawButtons();
 }
