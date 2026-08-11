@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>К2: Экспедиция</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0b1220;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  overflow: hidden;
+  font-family: 'Segoe UI', Arial, sans-serif;
+}
+canvas {
+  border: 2px solid #24334a;
+  border-radius: 8px;
+  box-shadow: 0 0 50px rgba(80, 140, 255, 0.25);
+  cursor: pointer;
+}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+canvas.width = 1000;
+canvas.height = 640;
+
+const W = 720;          // ширина мира (левый панень)
+const H = 640;
+
+const BASE_ALT = 5000;
+const SUMMIT_ALT = 8611;
+const DANGER_ALT = 8000;
+
+let state = 'menu';
+let day = 0;
+let log = [];
+let buttons = [];
+let team = [];
+let food = 12;          // порций
+let oxygen = 600;       // литров
+let rope = 1;
+let windWindow = false;
+let nextBoost = false;
+let descending = false;
+let summited = false;
+let deaths = 0;
+let survivors = 0;
+let result = null;
+
+function logMsg(s) { log.push(s); if (log.length > 7) log.shift(); }
+
+// ---------- Климат-проба ----------
+function difficultyAt(alt) {
+  if (alt < 6000) return 1;
+  if (alt < 7000) return 2;
+  if (alt < 7600) return 3;
+  if (alt < 8000) return 4;
+  return 5;
+}
+function o2RatePerPerson(alt, storm) {
+  if (alt < 6500) return 0;
+  let r = alt < 8000 ? 0.4 : 1.2;
+  if (storm) r *= 1.6;
+  return r;
+}
+
+// ---------- Команда ----------
+function makeTeam() {
+  return [
+    { name: 'Арсалан',   role: 'Шерп',      color: '#ff7b3a', stamina: 100, hp: 100, perk: 'Скорость +20%', skill: 'Рывок (2x дистанция)', skillUsed: false },
+    { name: 'Лина',      role: 'Врач',      color: '#4ad0ff', stamina: 78,  hp: 92,  perk: 'Лечит на стоянке', skill: 'Перевязка (+25 hp всем)', skillUsed: false },
+    { name: 'Ханс',      role: 'Новичок',   color: '#7be86c', stamina: 62,  hp: 100, perk: 'Малый расход O2', skill: 'Второе дыхание (+20 стамина всем)', skillUsed: false },
+    { name: 'Ольга',     role: 'Фотограф',  color: '#ffd24a', stamina: 72,  hp: 86,  perk: 'Мораль при спасении', skill: 'Вдохновение (+30 стамина всем)', skillUsed: false },
+  ];
+}
+
+function leader() { return team[0]; }
+function leaderAlt() { return team.length ? team[0].alt : BASE_ALT; }
+
+function moveTeam(delta) {
+  for (const m of team) {
+    m.alt = Math.min(SUMMIT_ALT + 20, Math.max(BASE_ALT, m.alt + delta));
+  }
+}
+
+function refreshAlts() {
+  for (let i = 0; i < team.length; i++) team[i].alt = BASE_ALT;
+}
+
+// ---------- Действия ----------
+function doClimb() {
+  if (state !== 'play') return;
+  day++;
+  const alt = leaderAlt();
+  const d = difficultyAt(alt);
+  let dist = (150 / d) * (0.8 + Math.random() * 0.5);
+  if (team[0].perk === 'Скорость +20%') dist *= 1.2;
+  if (nextBoost) { dist *= 2; nextBoost = false; }
+  if (windWindow) { dist *= 1.5; windWindow = false; }
+  if (descending) dist = -dist;
+
+  // преодолеваем "порог" вершины
+  if (!descending && alt >= SUMMIT_ALT - 5 && dist > 0) {
+    dist = SUMMIT_ALT - alt;
+    summited = true;
+  }
+  moveTeam(dist);
+  consumeTurn(descending ? 0.7 : 1);
+  if (summited) {
+    logMsg('ВЕРШИНА! 8611 м — поднялись на крышу мира!');
+    logMsg('Теперь главное — спуститься.');
+    state = 'summit';
+    updateButtons();
+    return;
+  }
+  rollEvent(alt, 0.55);
+  checkDeath();
+  updateButtons();
+}
+
+function doRest() {
+  if (state !== 'play') return;
+  day++;
+  if (food <= 0) { logMsg('Еда закончилась! Стоянка без припасов.'); }
+  for (const m of team) {
+    m.stamina = Math.min(100, m.stamina + 55);
+    if (m.perk === 'Лечит на стоянке') m.hp = Math.min(100, m.hp + 5);
+  }
+  food = Math.max(0, food - team.length);
+  logMsg('Разбили лагерь: стамина восстановлена.');
+  rollEvent(leaderAlt(), 0.25);
+  checkDeath();
+  updateButtons();
+}
+
+function doSkill(i) {
+  if (state !== 'play') return;
+  const m = team[i];
+  if (m.skillUsed) return;
+  m.skillUsed = true;
+  if (m.role === 'Шерп') { nextBoost = true; logMsg('Арсалан: рывок — следующее движение 2x.'); }
+  if (m.role === 'Врач') { for (const x of team) x.hp = Math.min(100, x.hp + 25); logMsg('Лина: перевязка — всем +25 здоровья.'); }
+  if (m.role === 'Новичок') { m.stamina = 100; for (const x of team) x.stamina = Math.min(100, x.stamina + 20); logMsg('Ханс: второе дыхание!'); }
+  if (m.role === 'Фотограф') { for (const x of team) x.stamina = Math.min(100, x.stamina + 30); logMsg('Ольга: вдохновение — все бодрее.'); }
+  updateButtons();
+}
+
+function toggleDescend() {
+  if (state !== 'play') return;
+  descending = !descending;
+  if (descending) logMsg('Команда разворачивается и идёт ВНИЗ.');
+  else logMsg('Снова вверх!');
+  updateButtons();
+}
+
+// ---------- Ресурсы и здоровье ----------
+function consumeTurn(factor) {
+  const alive = team.filter(m => m.hp > 0);
+  const storm = Math.random() < 0.15;
+  const alt = leaderAlt();
+  const rate = o2RatePerPerson(alt, storm);
+
+  // кислород
+  const need = alive.length * rate * factor;
+  let noO2 = false;
+  if (need > 0) {
+    if (oxygen >= need) { oxygen -= need; }
+    else { oxygen = 0; noO2 = true; logMsg('КИСЛОРОД НА ИСХОДЕ!'); }
+  }
+
+  for (const m of team) {
+    if (m.hp <= 0) continue;
+    const d = difficultyAt(alt);
+    let loss = (d * 5 + (noO2 && alt > DANGER_ALT ? 12 : 0)) * factor;
+    m.stamina -= loss;
+    if (m.perk === 'Малый расход O2' && noO2) m.stamina += 4;
+    if (m.stamina <= 0) {
+      m.hp -= noO2 ? 14 : 8;   // переохлаждение
+      m.stamina = 0;
+    }
+    // голод
+    if (food <= 0) m.hp -= 3;
+  }
+
+  if (food > 0) {
+    food = Math.max(0, food - Math.ceil(alive.length * factor));
+    if (food === 0) logMsg('Провизия закончилась.');
+  }
+  if (storm && alt > 6000) logMsg('Шторм: все мёрзнут.');
+}
+
+// ---------- События ----------
+function rollEvent(alt, chance) {
+  if (Math.random() > chance) {
+    const w = ['ясно', 'туман', 'лёгкий ветер', 'солнечно', 'морозно'][Math.floor(Math.random() * 5)];
+    logMsg('Погода: ' + w + '.');
+    return;
+  }
+  const high = alt > DANGER_ALT;
+  const roll = Math.random();
+  if (alt > 6000 && roll < 0.18) {
+    logMsg('ЛАВИНА! Все вцепились в склон.');
+    if (Math.random() < 0.35) {
+      oxygen = Math.max(0, oxygen - 200);
+      logMsg('Рюкзак с баллонами унесло лавиной!');
+    }
+    if (Math.random() < 0.2 && team.length > 1) {
+      const idx = Math.floor(Math.random() * team.length);
+      const dead = team[idx];
+      team.splice(idx, 1);
+      deaths++; if (!dead) {}
+      logMsg(dead.name + ' сорвался в расщелину...');
+    } else if (Math.random() < 0.3) {
+      for (const m of team) m.hp -= 12;
+      logMsg('Каменный град — все пострадали.');
+    }
+  } else if (roll < 0.38) {
+    logMsg('ШТОРМ накрыл группу. Теряем силы.');
+    for (const m of team) { m.stamina = Math.max(0, m.stamina - 25); m.hp -= 5; }
+    oxygen = Math.max(0, oxygen - 60);
+  } else if (roll < 0.55) {
+    logMsg('Пробка из коммерческих групп. Час в очереди.');
+    for (const m of team) m.stamina = Math.max(0, m.stamina - 8);
+    oxygen = Math.max(0, oxygen - 40);
+  } else if (roll < 0.7) {
+    logMsg('Спасли застрявшего альпиниста. Мораль растёт!');
+    for (const m of team) m.hp = Math.min(100, m.hp + 8);
+  } else if (roll < 0.84) {
+    logMsg('Брошенный лагерь: нашлись припасы.');
+    food += 3; oxygen = Math.min(800, oxygen + 100);
+  } else {
+    logMsg('Окно хорошей погоды! Движемся быстрее.');
+    windWindow = true;
+  }
+}
+
+function checkDeath() {
+  const before = team.length;
+  team = team.filter(m => m.hp > 0);
+  const died = before - team.length;
+  if (died > 0) {
+    deaths += died;
+    logMsg('Погибло альпинистов: ' + died);
+  }
+  if (team.length === 0) {
+    endGame(false);
+  }
+}
+
+function endGame(win) {
+  survivors = team.length;
+  const summitted = summited;
+  result = { win: win, survivors: survivors, deaths: deaths, summited: summitted, days: day, alt: leaderAlt() };
+  state = 'end';
+  updateButtons();
+}
+
+function toBase() {
+  moveTeam(-99999);
+  endGame(true);
+}
+
+// ---------- Кнопки ----------
+function updateButtons() {
+  buttons = [];
+  const bx = 730, bw = 250;
+  let y = 400;
+  if (state === 'menu') {
+    buttons.push({ x: bx, y: 330, w: bw, h: 48, label: 'Начать экспедицию', act: () => startGame() });
+  } else if (state === 'end') {
+    buttons.push({ x: bx, y: 330, w: bw, h: 48, label: 'Ещё одна попытка', act: () => startGame() });
+  } else if (state === 'summit') {
+    buttons.push({ x: bx, y, w: bw, h: 46, label: 'Начинаем спуск', act: () => { descending = true; state = 'play'; logMsg('Спуск к базовому лагерю. Осторожно!'); updateButtons(); } });
+  } else {
+    buttons.push({ x: bx, y, w: bw, h: 46, label: descending ? 'Спускаемся вниз' : 'Вперёд вверх', act: doClimb });
+    y += 52;
+    buttons.push({ x: bx, y, w: bw, h: 46, label: 'Стоянка (отдых)', act: doRest });
+    y += 52;
+    buttons.push({ x: bx, y, w: bw, h: 46, label: descending ? 'Развернуться вверх' : 'Повернуть вниз', act: toggleDescend });
+    y += 52;
+    for (let i = 0; i < team.length; i++) {
+      const m = team[i];
+      buttons.push({ x: bx, y, w: bw, h: 40, label: 'Навык: ' + m.role + (m.skillUsed ? ' (исп.)' : ''), act: () => doSkill(i), disabled: m.skillUsed });
+      y += 46;
+    }
+  }
+}
+
+function startGame() {
+  team = makeTeam();
+  refreshAlts();
+  food = 12; oxygen = 600; rope = 1;
+  day = 0; log = [];
+  windWindow = false; nextBoost = false;
+  descending = false; summited = false;
+  deaths = 0; survivors = 0; result = null;
+  state = 'play';
+  logMsg('День 1. Базовый лагерь, 5000 м.');
+  logMsg('Цель: вершина К2 (8611 м) и возвращение.');
+  logMsg('Любая смерть — поражение для экспедиции.');
+  updateButtons();
+}
+
+// ---------- Отрисовка ----------
+function altToY(alt) { return H - 30 - (alt - 3000) * ((H - 60) / 6000); }
+
+const ridge = [];
+for (let x = 0; x <= W; x += 24) {
+  ridge.push({ x: x, alt: 4600 + 1400 * Math.sin(x * 0.021) + 700 * Math.sin(x * 0.05 + 2) + 900 * Math.cos(x * 0.013) });
+}
+
+function drawWorld() {
+  // небо
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#bfe6ff');
+  g.addColorStop(1, '#eef7ff');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  // солнце
+  ctx.fillStyle = '#ffe9a8';
+  ctx.beginPath(); ctx.arc(W - 70, 60, 30, 0, 7); ctx.fill();
+  ctx.fillStyle = '#fff4d0';
+  ctx.beginPath(); ctx.arc(W - 70, 60, 18, 0, 7); ctx.fill();
+
+  // дальние пики
+  ctx.fillStyle = '#9db4cf';
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (let x = 0; x <= W; x += 20) {
+    const yy = H - 40 - (300 + 220 * Math.sin(x * 0.03) + 120 * Math.sin(x * 0.09)) * 0.6;
+    ctx.lineTo(x, yy);
+  }
+  ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
+
+  // снежная граница
+  const snowY = altToY(7500);
+
+  // главный хребет (камень)
+  ctx.fillStyle = '#3c4250';
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (const p of ridge) ctx.lineTo(p.x, altToY(p.alt));
+  ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
+
+  // снег выше 7500
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, 0, W, snowY); ctx.clip();
+  ctx.fillStyle = '#f4f8ff';
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (const p of ridge) ctx.lineTo(p.x, altToY(p.alt));
+  ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
+  ctx.restore();
+
+  // контур хребта
+  ctx.strokeStyle = '#262b36';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (const p of ridge) {
+    if (p === ridge[0]) ctx.moveTo(p.x, altToY(p.alt));
+    else ctx.lineTo(p.x, altToY(p.alt));
+  }
+  ctx.stroke();
+
+  // флаг на вершине
+  const sy = altToY(SUMMIT_ALT);
+  ctx.strokeStyle = '#333'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(W - 60, sy); ctx.lineTo(W - 60, sy - 34); ctx.stroke();
+  ctx.fillStyle = '#e33'; ctx.beginPath(); ctx.moveTo(W - 60, sy - 34); ctx.lineTo(W - 34, sy - 27); ctx.lineTo(W - 60, sy - 20); ctx.closePath(); ctx.fill();
+
+  // отметки высоты
+  ctx.fillStyle = 'rgba(40,50,70,0.75)';
+  ctx.font = '11px Segoe UI';
+  for (let a = 5000; a <= 9000; a += 1000) {
+    const yy = altToY(a);
+    ctx.fillText(a + ' м', W - 92, yy + 4);
+    ctx.fillStyle = 'rgba(40,50,70,0.35)';
+    ctx.fillRect(W - 4, yy, 4, 1);
+    ctx.fillStyle = 'rgba(40,50,70,0.75)';
+  }
+
+  // "зона смерти"
+  const dzY = altToY(DANGER_ALT);
+  ctx.fillStyle = 'rgba(180, 30, 30, 0.08)';
+  ctx.fillRect(0, dzY, W, snowY - dzY);
+  ctx.fillStyle = 'rgba(180,30,30,0.7)';
+  ctx.font = '10px Segoe UI';
+  ctx.fillText('☠ ЗОНА СМЕРТИ', 8, dzY + 14);
+
+  // группа: верёвка
+  const sorted = [...team].sort((a, b) => b.alt - a.alt);
+  if (sorted.length > 1) {
+    ctx.strokeStyle = 'rgba(230,225,210,0.9)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    sorted.forEach((m, i) => {
+      const px = 90 + i * 22;
+      const py = altToY(m.alt);
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+  }
+
+  // альпинисты
+  sorted.forEach((m, i) => {
+    const px = 90 + i * 22;
+    const py = altToY(m.alt);
+    // тело
+    ctx.fillStyle = m.color;
+    ctx.fillRect(px - 4, py - 8, 8, 10);
+    // голова/каска
+    ctx.fillStyle = '#ffb84a';
+    ctx.beginPath(); ctx.arc(px, py - 12, 4.5, 0, 7); ctx.fill();
+    // имя лидера
+    if (i === 0) {
+      ctx.fillStyle = '#fff';
+      ctx.strokeStyle = '#222'; ctx.lineWidth = 2.5;
+      ctx.font = 'bold 11px Segoe UI';
+      ctx.strokeText(m.name, px - 20, py - 22);
+      ctx.fillText(m.name, px - 20, py - 22);
+    }
+  });
+
+  // тень смерти (статус у всех)
+  if (sorted.length === 0) {
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+
+function drawBar(x, y, w, h, v, max, c1, c2) {
+  ctx.fillStyle = 'rgba(255,255,255,0.12)';
+  ctx.fillRect(x, y, w, h);
+  const frac = Math.max(0, Math.min(1, v / max));
+  const g = ctx.createLinearGradient(x, y, x + w, y);
+  g.addColorStop(0, c1); g.addColorStop(1, c2);
+  ctx.fillStyle = g;
+  ctx.fillRect(x, y, w * frac, h);
+}
+
+function drawHud() {
+  const x = W + 8, w = 1000 - W - 16;
+
+  ctx.fillStyle = 'rgba(18, 26, 40, 0.92)';
+  ctx.fillRect(W, 0, 1000 - W, H);
+
+  ctx.fillStyle = '#eaf2ff';
+  ctx.font = 'bold 17px Segoe UI';
+  ctx.fillText('ЭКСПЕДИЦИЯ К2', x, 28);
+  ctx.font = '12px Segoe UI';
+  ctx.fillStyle = '#9fb3d6';
+  ctx.fillText('Крыша мира · 8611 м', x, 46);
+
+  // статус
+  ctx.fillStyle = '#cfd9ec';
+  ctx.font = '12px Segoe UI';
+  const alt = leaderAlt();
+  ctx.fillText('Высота: ' + Math.round(alt) + ' м', x, 70);
+  ctx.fillText('День: ' + day, x, 86);
+  ctx.fillText('Статус: ' + (descending ? 'СПУСК' : 'ВОСХОЖДЕНИЕ'), x, 102);
+  ctx.fillText('Флаг: ' + (summited ? 'ВЗЯТ' : '—'), x, 118);
+
+  // ресурсы
+  ctx.fillStyle = '#eaf2ff';
+  ctx.fillText('Припасы:', x, 144);
+  drawBar(x, 150, w, 10, food, 20, '#d9a441', '#b97e2a');
+  ctx.fillText('Еда ' + food, x + w + 4, 159);
+  drawBar(x, 168, w, 10, oxygen, 800, '#4ad0ff', '#2f8fb0');
+  ctx.fillText('O2 ' + Math.round(oxygen) + ' л', x + w + 4, 177);
+
+  // команда
+  ctx.fillStyle = '#eaf2ff';
+  ctx.fillText('Команда (' + team.length + '):', x, 204);
+  let yy = 212;
+  for (const m of team) {
+    ctx.fillStyle = m.color;
+    ctx.font = 'bold 12px Segoe UI';
+    ctx.fillText(m.name + ' — ' + m.role, x, yy);
+    ctx.font = '10px Segoe UI';
+    ctx.fillStyle = '#8fa3c4';
+    ctx.fillText(m.perk, x + w - 90, yy);
+    yy += 14;
+    drawBar(x, yy, w, 8, m.stamina, 100, '#7be86c', '#3f9b3f');
+    ctx.fillStyle = '#9fb3d6'; ctx.font = '10px Segoe UI';
+    ctx.fillText('Стамена', x + w + 4, yy + 8);
+    yy += 11;
+    drawBar(x, yy, w, 8, m.hp, 100, '#ff6b6b', '#b33232');
+    ctx.fillStyle = '#9fb3d6'; ctx.font = '10px Segoe UI';
+    ctx.fillText('Здоровье', x + w + 4, yy + 8);
+    yy += 18;
+  }
+
+  // лог
+  ctx.fillStyle = '#eaf2ff';
+  ctx.font = 'bold 12px Segoe UI';
+  ctx.fillText('Журнал:', x, yy + 4);
+  yy += 10;
+  ctx.font = '11px Segoe UI';
+  for (const s of log) {
+    ctx.fillStyle = '#b8c6e0';
+    ctx.fillText(s.length > 34 ? s.slice(0, 33) + '…' : s, x, yy);
+    yy += 15;
+  }
+
+  // кнопки
+  for (const b of buttons) {
+    ctx.fillStyle = b.disabled ? 'rgba(255,255,255,0.08)' : (b.label.indexOf('Навык') === 0 ? 'rgba(80,140,255,0.35)' : 'rgba(60,180,120,0.35)');
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+    ctx.strokeStyle = b.disabled ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.35)';
+    ctx.strokeRect(b.x, b.y, b.w, b.h);
+    ctx.fillStyle = b.disabled ? '#556' : '#eaf2ff';
+    ctx.font = '12px Segoe UI';
+    ctx.textAlign = 'center';
+    ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + 4);
+    ctx.textAlign = 'left';
+  }
+}
+
+function drawMenu() {
+  ctx.fillStyle = '#0b1220';
+  ctx.fillRect(0, 0, 1000, 640);
+  const g = ctx.createLinearGradient(0, 200, 0, 500);
+  g.addColorStop(0, '#1a2740');
+  g.addColorStop(1, '#0b1220');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 200, 1000, 300);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 500, 1000, 140);
+  for (let i = 0; i < 6; i++) {
+    const px = 100 + i * 160;
+    ctx.fillStyle = ['#3c4250', '#56616f'][i % 2];
+    ctx.beginPath();
+    ctx.moveTo(px - 80, 500);
+    ctx.lineTo(px, 240 + (i % 3) * 30);
+    ctx.lineTo(px + 80, 500);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 44px Segoe UI';
+  ctx.textAlign = 'center';
+  ctx.fillText('К2: ЭКСПЕДИЦИЯ', 500, 290);
+  ctx.font = '16px Segoe UI';
+  ctx.fillStyle = '#ffd24a';
+  ctx.fillText('Взойти на вершину мира и вернуть команду живой', 500, 330);
+  ctx.fillStyle = '#9fb3d6';
+  ctx.font = '13px Segoe UI';
+  ctx.fillText('Кислород · Лавины · Зона смерти · Выбор пути', 500, 358);
+  ctx.fillStyle = '#fff';
+  ctx.font = '15px Segoe UI';
+  ctx.fillText('Четверо против К2. Доведешь всех до 8611 м — и обратно?', 500, 470);
+  ctx.textAlign = 'left';
+}
+
+function drawEnd() {
+  drawWorld();
+  drawHud();
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillRect(0, 0, 1000, 640);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 36px Segoe UI';
+  ctx.textAlign = 'center';
+  const t1 = result.win ? 'ЭКСПЕДИЦИЯ УСПЕШНА' : 'ЭКСПЕДИЦИЯ ПРОВАЛЕНА';
+  ctx.fillStyle = result.win ? '#7be86c' : '#ff6b6b';
+  ctx.fillText(t1, 500, 200);
+  ctx.fillStyle = '#eaf2ff';
+  ctx.font = '18px Segoe UI';
+  if (result.win) {
+    ctx.fillText('Вершина взята и команда вернулась живой!', 500, 240);
+  } else {
+    ctx.fillText('Вершина: ' + (result.summited ? 'взята' : 'не взята') + ' · выживших: ' + result.survivors, 500, 240);
+  }
+  ctx.font = '15px Segoe UI';
+  ctx.fillStyle = '#9fb3d6';
+  ctx.fillText('Дней: ' + result.days + ' · Погибло: ' + result.deaths + ' · Вершина: ' + (result.summited ? 'ДА' : 'нет'), 500, 275);
+  ctx.font = '13px Segoe UI';
+  ctx.fillText('Большинство трагедий на К2 — на спуске. Решающим был выбор пути.', 500, 305);
+  ctx.textAlign = 'left';
+}
+
+function draw() {
+  if (state === 'menu') drawMenu();
+  else if (state === 'end') drawEnd();
+  else { drawWorld(); drawHud(); }
+}
+
+// ---------- Ввод ----------
+canvas.addEventListener('mousedown', e => {
+  const r = canvas.getBoundingClientRect();
+  const mx = (e.clientX - r.left) * (1000 / r.width);
+  const my = (e.clientY - r.top) * (640 / r.height);
+  for (const b of buttons) {
+    if (!b.disabled && mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) {
+      b.act();
+      break;
+    }
+  }
+});
+
+// возврат в базовый лагерь по клику после вершины — обработано в кнопке спуска,
+// но спуск вниз до 5000 финализируется автоматически:
+const origMoveTeam = moveTeam;
+moveTeam = function (delta) {
+  origMoveTeam(delta);
+  if (descending && leaderAlt() <= BASE_ALT && team.length > 0) {
+    if (state === 'play') {
+      logMsg('Дошли до базового лагеря.');
+      endGame(true);
+    }
+  }
+};
+
+startGame();
+</script>
+</body>
+</html>
