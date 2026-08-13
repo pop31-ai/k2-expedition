@@ -867,6 +867,12 @@ function loop() {
   requestAnimationFrame(loop);
 }
 loop();
+
+window.__k2 = () => ({
+  state, day, food, oxygen, weather, forecast, summited, descending, renown,
+  alt: leaderAlt(),
+  team: team.map(m => ({ name: m.name, hp: +m.hp.toFixed(1), stamina: +m.stamina.toFixed(1) })),
+});
 </script>
 </body>
 </html>
